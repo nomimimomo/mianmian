@@ -1,0 +1,5 @@
+#awm-extension-settings .awm-extension-config{padding:0 8px}
+#awm-extension-settings .awm-extension-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0}
+#awm-extension-settings .awm-extension-row input[type=range]{max-width:180px;width:45%}
+#awm-extension-settings [data-mm-open]{margin:6px 0}
+#awm-extension-settings .awm-extension-status{font-size:.85em;opacity:.8}
