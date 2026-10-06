@@ -298,9 +298,10 @@
         mmTrackPanelActions(panel);
         awmEnhanceStyleUI(panel);
         panel.querySelector('#awmClose').onclick = close;
+        enableDrag();
         panel.querySelectorAll('[data-page]').forEach(b => {
             b.onclick = () => {
-                if(mmWriteLocked())return;
+                if(mmWriteLocked()||!mmPageEnabled(b.dataset.page))return;
                 if (b.dataset.mmSide) {
                     if (root.getElementById('awmMian')) mmSetActive(b.dataset.mmSide);
                     else { mmRuntime.active = b.dataset.mmSide; render(b.dataset.page); }
@@ -339,7 +340,7 @@
         const zoomWidth = zoom > 0 && zoom < 1 ? vp.w * zoom : vp.w;
         const visibleWidth = Number.isFinite(frameWidth) && frameWidth > 0 ? Math.min(vp.w, frameWidth, zoomWidth) : Math.min(vp.w, zoomWidth);
         if (awmLayoutDevice() !== 'desktop' || visibleWidth > 800) return null;
-        const margin = Math.round(vp.w * .08);
+        const margin = vp.w * .02;
         return { left: vp.x + margin, width: Math.round(vp.w - margin * 2) };
     }
     function awmLayoutVerticalBand() {
@@ -353,9 +354,37 @@
         const topBar = visible('#top-bar') || visible('#top_bar');
         const sendForm = visible('#send_form') || visible('#chat-input-container');
         let top = vp.y + 8, bottom = vp.y + vp.h - 8;
-        if (topBar && topBar.bottom < vp.y + Math.min(200, vp.h * .35)) top = Math.max(top, topBar.bottom + 8);
-        if (sendForm && sendForm.top > top + 160) bottom = Math.min(bottom, sendForm.top - 8);
-        return bottom > top + 120 ? { top, bottom } : { top: vp.y + 8, bottom: vp.y + vp.h - 8 };
+        if (topBar) top = Math.max(top, topBar.bottom + 8);
+        if (sendForm && sendForm.top > top) bottom = Math.min(bottom, sendForm.top - 8);
+        return { top, bottom: Math.max(top + 1, bottom) };
+    }
+    // All windows share the same measured screen boundaries. No layout is saved here.
+    function awmLayoutConstrain(panel) {
+        const vp = awmLayoutViewport(), band = awmLayoutVerticalBand();
+        panel.style.boxSizing = 'border-box';
+        const inset = vp.w * .02;
+        const maxWidth = Math.max(1, vp.w - inset * 2), minWidth = Math.min(maxWidth, 240);
+        // Correct rendered dimensions as well as coordinates (themes may apply CSS zoom).
+        for (let i = 0; i < 3; i++) {
+            const rect = panel.getBoundingClientRect();
+            const width = Math.max(minWidth, Math.min(maxWidth, rect.width));
+            const height = Math.min(band.bottom - band.top, rect.height);
+            if (Math.abs(width - rect.width) > .25)
+                panel.style.width = width / (rect.width / (parseFloat(hostWindow.getComputedStyle(panel).width) || rect.width) || 1) + 'px';
+            if (Math.abs(height - rect.height) > .25)
+                panel.style.height = height / (rect.height / (parseFloat(hostWindow.getComputedStyle(panel).height) || rect.height) || 1) + 'px';
+        }
+        for (let i = 0; i < 3; i++) {
+            const rect = panel.getBoundingClientRect();
+            const leftMin = vp.x + inset;
+            const leftMax = vp.x + vp.w - rect.width - inset;
+            const left = Math.max(leftMin, Math.min(leftMax, rect.left));
+            const top = Math.max(band.top, Math.min(band.bottom - rect.height, rect.top));
+            const scaleX = rect.width / (parseFloat(hostWindow.getComputedStyle(panel).width) || rect.width) || 1;
+            const scaleY = rect.height / (parseFloat(hostWindow.getComputedStyle(panel).height) || rect.height) || 1;
+            panel.style.left = ((parseFloat(panel.style.left) || 0) + (left - rect.left) / scaleX) + 'px';
+            panel.style.top = ((parseFloat(panel.style.top) || 0) + (top - rect.top) / scaleY) + 'px';
+        }
     }
     function awmLayoutFitHeight(panel) {
         const band = awmLayoutVerticalBand();
@@ -377,15 +406,16 @@
         if (!panel || panel.style.display === 'none' || !value) return;
         const vp = awmLayoutViewport(), mobile = awmLayoutDevice() === 'mobile';
         if (mobile) panel.style.height = Math.round(Math.min(Math.max(220, vp.h - 16), Math.max(220, Math.min(vp.h - 16, +value.size || 620)))) + 'px';
-        else panel.style.width = (awmNarrowPanelWidth(vp)?.width || Math.round(Math.min(Math.max(220, vp.w - 16), Math.max(240, Math.min(vp.w - 16, +value.size || 680))))) + 'px';
+        else panel.style.width = Math.round(Math.min(vp.w - 16, Math.max(240, +value.size || 680))) + 'px';
         const band = awmLayoutFitHeight(panel);
         const rect = panel.getBoundingClientRect();
-        const left = awmNarrowPanelWidth(vp)?.left ?? vp.x + Math.max(0, Math.min(vp.w - rect.width, (+value.x || 0) * vp.w));
+        const left = vp.x + Math.max(0, Math.min(vp.w - rect.width, (+value.x || 0) * vp.w));
         const storedTop = vp.y + (+value.y || 0) * vp.h;
         const top = band ? (mobile ? Math.max(band.top, Math.min(band.bottom - rect.height, storedTop)) : band.top)
             : vp.y + Math.max(0, Math.min(vp.h - rect.height, (+value.y || 0) * vp.h));
         panel.style.left = (parseFloat(panel.style.left) || 0) + left - rect.left + 'px';
         panel.style.top = (parseFloat(panel.style.top) || 0) + top - rect.top + 'px';
+        awmLayoutConstrain(panel);
     }
     function awmLayoutRestore() {
         const state = awmLayoutState();
@@ -402,6 +432,7 @@
                 const top = band ? (awmLayoutDevice() === 'mobile' ? band.top + (band.bottom - band.top - rect.height) / 2 : band.top)
                     : vp.y + (vp.h - rect.height) / 2;
                 panel.style.top = (parseFloat(panel.style.top) || 0) + top - rect.top + 'px';
+                awmLayoutConstrain(panel);
             }
         }
     }
@@ -439,6 +470,7 @@
                     panel.style.transform = 'none'; panel.style.left = left + 'px';
                     panel.style.width = right - left + 'px';
                 }
+                awmLayoutConstrain(panel);
             });
             for (const type of ['pointerup','pointercancel']) handle.addEventListener(type, () => {
                 if (start) { const state = awmLayoutState(); state.current = awmLayoutCapture(); awmLayoutWrite(state); }
@@ -483,6 +515,7 @@
             const top = band ? (awmLayoutDevice() === 'mobile' ? band.top + (band.bottom - band.top - rect.height) / 2 : band.top)
                 : vp.y + (vp.h - rect.height) / 2;
             panel.style.top = (top - rect.top) + 'px';
+            awmLayoutConstrain(panel);
             state.current = awmLayoutCapture(); if (state.locked) state.slots[state.slot] = state.current; awmLayoutWrite(state);
             toast('已恢复默认位置', 'success');
         };
@@ -520,6 +553,7 @@
             panel.style.top = (band ? (awmLayoutDevice() === 'mobile'
                 ? Math.max(band.top, Math.min(band.bottom - panel.offsetHeight, desiredTop)) : band.top)
                 : Math.max(vp.y, Math.min(vp.y + vp.h - panel.offsetHeight, desiredTop))) + 'px';
+            awmLayoutConstrain(panel);
         });
 
         head.addEventListener('pointerup', () => {
@@ -565,6 +599,7 @@
 
         panel.style.left = (curLeft + (desiredLeft - rect.left)) + 'px';
         panel.style.top = (curTop + (desiredTop - rect.top)) + 'px';
+        awmLayoutConstrain(panel);
     }
 
     let vvBound = false;
@@ -640,6 +675,7 @@
         const host=root.getElementById('awmMian');
         const single=host?.dataset.mmFocus || (host?.classList.contains('awm-mm-narrow')?mmRuntime.active:'');
         root.querySelectorAll('#'+PANEL_ID+' .awm-tab').forEach(b=>{
+            b.hidden=!mmPageEnabled(b.dataset.page);
             b.classList.toggle('active',b.dataset.page===awmCurrentPage && (!b.dataset.mmSide || !single || b.dataset.mmSide===single));
         });
     }
@@ -647,6 +683,8 @@
         const main = root.getElementById('awmMain');
         if (!main) return;
         if (mmWriteLocked()) return;
+        if (!mmPageEnabled(page)) page='settings';
+        main.classList.remove('awm-panel-settings');
         if (root.getElementById('awmMian')) {
             mmPersistCurrent('char'); mmPersistCurrent('user');
             // A pending load cannot finish into a destroyed frame.
@@ -1097,7 +1135,7 @@
                 在「${esc(fileName)}」里找到 <b>${candidates.length}</b> 条，勾选要导入的文风（少于 2000 字的默认不勾选）：
             </div>
             <div style="margin-bottom:6px;flex:0 0 auto;display:flex;align-items:center;min-height:30px">
-                <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;line-height:1.2"><input type="checkbox" id="jsonSelectAll" style="flex:0 0 auto;margin:0;width:18px;height:18px"> <span>全选 / 全不选</span></label>
+                <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;line-height:1.2"><input type="checkbox" id="jsonSelectAll" style="flex:0 0 auto;margin:0;width:18px;height:18px"> <span>全选 / 全不选</span></label><span style="margin-left:auto;font-size:.8em;opacity:.7">沿勾选栏拖动连选</span>
             </div>
             <div id="jsonImportList" style="flex:1 1 auto;min-height:0;overflow:auto;border:1px solid var(--SmartThemeBorderColor);border-radius:7px;padding:6px"></div>
             <div style="margin-top:10px;text-align:right;flex:0 0 auto">
@@ -1118,7 +1156,34 @@
         panel.appendChild(layer);
 
         const checks = () => [...box.querySelectorAll('.json-pick')];
-        box.querySelector('#jsonSelectAll').onchange = e => checks().forEach(x => x.checked = e.target.checked);
+        const all=box.querySelector('#jsonSelectAll');
+        const sync=()=>{const items=checks(),n=items.filter(x=>x.checked).length;all.checked=n===items.length;all.indeterminate=n>0&&n<items.length;};
+        all.onchange = e => {checks().forEach(x => x.checked = e.target.checked);sync();};
+        let anchor=null,gesture=null,suppressClick=false;
+        checks().forEach(x=>{x.style.cssText='flex:0 0 24px;width:24px;height:24px;margin:0;touch-action:none';});
+        const range=(from,to,value)=>{const items=checks();for(let i=Math.min(from,to);i<=Math.max(from,to);i++)items[i].checked=value;sync();};
+        list.addEventListener('pointerdown',e=>{
+            const input=e.target.closest('.json-pick');if(!input||e.button!==0)return;
+            const index=Number(input.dataset.i);e.preventDefault();suppressClick=true;
+            gesture={id:e.pointerId,from:e.shiftKey&&anchor!==null?anchor:index,to:index,value:!input.checked};
+            range(gesture.from,index,gesture.value);anchor=index;list.setPointerCapture(e.pointerId);
+        });
+        list.addEventListener('pointermove',e=>{
+            if(!gesture||e.pointerId!==gesture.id)return;e.preventDefault();
+            const bounds=list.getBoundingClientRect();
+            if(e.clientY<bounds.top+28)list.scrollTop-=18;else if(e.clientY>bounds.bottom-28)list.scrollTop+=18;
+            const rows=checks();let nearest=gesture.to,distance=Infinity;
+            rows.forEach((input,i)=>{const r=input.getBoundingClientRect(),d=Math.abs(e.clientY-r.top-r.height/2);if(d<distance){distance=d;nearest=i;}});
+            range(gesture.to,nearest,gesture.value);gesture.to=nearest;
+        });
+        const end=e=>{if(!gesture||e.pointerId!==gesture.id)return;gesture=null;if(list.hasPointerCapture(e.pointerId))list.releasePointerCapture(e.pointerId);hostWindow.setTimeout(()=>suppressClick=false,0);};
+        list.addEventListener('pointerup',end);list.addEventListener('pointercancel',end);
+        list.addEventListener('click',e=>{if(suppressClick){e.preventDefault();e.stopPropagation();return;}
+            const input=e.target.closest('label')?.querySelector('.json-pick');if(!input)return;
+            if(e.target!==input)return;
+            const index=Number(input.dataset.i);if(e.shiftKey&&anchor!==null)range(anchor,index,input.checked);anchor=index;sync();
+        });
+        list.addEventListener('change',sync);sync();
         box.querySelector('#jsonImportCancel').onclick = () => layer.remove();
         box.querySelector('#jsonImportOk').onclick = () => {
             const chosenIdx = checks().filter(x => x.checked).map(x => Number(x.dataset.i));
@@ -1221,9 +1286,18 @@
         for(let i=1;i<=a.length;i++){const next=[i];for(let j=1;j<=b.length;j++)next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1));row=next;}
         return 1-row[b.length]/Math.max(a.length,b.length);
     }
+    function awmStyleNameSuffixes(name){
+        const parts=String(name||'').normalize('NFKC').split(/[-‐‑‒–—:|／/]+/u);
+        return parts.slice(1).map((_,i)=>awmStyleKey(parts.slice(i+1).join('-'))).filter(Boolean);
+    }
     function awmStyleMatches(styles,name){
-        return styles.map(s=>({s,score:awmStyleScore(s.name,name)}))
-            .filter(x=>x.score>=.82).sort((a,b)=>b.score-a.score).map(x=>x.s);
+        const key=awmStyleKey(name),suffixes=awmStyleNameSuffixes(name);
+        return styles.map(s=>{
+            const oldKey=awmStyleKey(s.name);
+            const score=key&&key===oldKey?1:
+                (oldKey&&(suffixes.includes(oldKey)||awmStyleNameSuffixes(s.name).includes(key))) ? .97 : awmStyleScore(s.name,name);
+            return {s,score};
+        }).filter(x=>x.score>=.82).sort((a,b)=>b.score-a.score).map(x=>x.s);
     }
     function awmInferImportName(block,fileName){
         const styles=load().styles;
@@ -1262,9 +1336,9 @@
         return new Promise(resolve=>{
             const panel=root.getElementById(PANEL_ID),layer=root.createElement('div');layer.id='awm-style-compare';
             layer.style.cssText='position:absolute;inset:0;z-index:50;padding:12px;display:flex;background:#0006';
-            layer.innerHTML=`<div class="awm-compare-box"><div>对比文风 ${index+1} / ${total}</div><select aria-label="匹配的已有文风"></select><div class="awm-compare-summary" role="status"></div><div class="awm-compare-cols"><section><b data-old-title></b><pre data-old-content></pre></section><section><b data-new-title></b><pre data-new-content></pre></section></div><div class="awm-compare-actions"><button class="awm-btn" data-choice="old">旧版</button><button class="awm-btn" data-choice="new">新版</button><button class="awm-btn" data-choice="both" title="保留新旧两版">跳过</button><span style="font-size:12px">跳过：两版都保留</span></div></div>`;
+            layer.innerHTML=`<div class="awm-compare-box"><div>对比文风 ${index+1} / ${total}</div><select aria-label="匹配的已有文风"></select><div class="awm-compare-summary" role="status"></div><div class="awm-compare-cols"><section><b data-old-title></b><pre data-old-content></pre></section><section><b data-new-title></b><pre data-new-content></pre></section></div><div class="awm-compare-actions"><button class="awm-btn" data-choice="old">保留旧版</button><button class="awm-btn" data-choice="new">仅替换正文</button><button class="awm-btn" data-choice="skip" title="新增新版，保留旧版">跳过</button><span style="font-size:12px">替换只改正文；跳过保留两版</span></div></div>`;
             const select=layer.querySelector('select');matches.forEach(s=>{const o=root.createElement('option');o.value=s.id;o.textContent=s.name;select.appendChild(o)});select.hidden=matches.length===1;
-            const format=s=>'作者：'+(s.author||'（无）')+'\n标签：'+(s.tags||[]).join('、')+'\n\n'+s.content+(s.note?'\n\n备注：\n'+s.note:'');
+            const format=s=>String(s.content||'');
             const paint=(node,lines,changed,kind)=>{
                 node.innerHTML=lines.map((line,i)=>changed.has(i)?'<span class="awm-diff-'+kind+'">'+esc(line||' ')+'</span>':esc(line||' ')).join('\n');
             };
@@ -1280,20 +1354,40 @@
                 paint(layer.querySelector('[data-new-content]'),newText.split('\n'),diff.newChanged,'new');
             };
             select.onchange=draw;draw();
-            layer.querySelectorAll('[data-choice]').forEach(b=>b.onclick=()=>{const id=select.value;layer.remove();resolve({choice:b.dataset.choice,id})});panel.appendChild(layer);awmFixContrast();
+            let answered=false;layer.querySelectorAll('[data-choice]').forEach(b=>b.onclick=event=>{if(answered||event.detail>1)return;answered=true;event.stopPropagation();const id=select.value;layer.remove();resolve({choice:b.dataset.choice,id})});panel.appendChild(layer);awmFixContrast();
         });
     }
+    let awmStyleImportBusy=false;
     async function awmImportStyles(candidates) {
-        const next=clone(load());let added=0,updated=0;
-        for(let i=0;i<candidates.length;i++){
-            const incoming=awmPrepareStyle(candidates[i]);
-            const matches=awmStyleMatches(next.styles,incoming.name);
-            if(!matches.length){next.styles.push({...incoming,id:uid('style')});added++;continue;}
-            const answer=await awmCompareStyle(incoming,matches,i,candidates.length);
-            if(answer.choice==='new'){const old=next.styles.find(s=>s.id===answer.id);Object.assign(old,incoming,{id:old.id});updated++;}
-            else if(answer.choice==='both'){next.styles.push({...incoming,id:uid('style')});added++;}
-        }
-        save(next);render('styles');toast('导入完成：新增 '+added+'，更新 '+updated,'success');
+        if(awmStyleImportBusy){toast('当前导入尚未完成','warning');return;}
+        awmStyleImportBusy=true;
+        const next=clone(load());let added=0,updated=0,kept=0,identical=0;
+        const batch=uid('import');
+        const log=(status,details)=>mmLog('styleImport','styles',status,'',undefined,{batch,...details});
+        log('started',{total:candidates.length});
+        try{
+            for(let i=0;i<candidates.length;i++){
+                const incoming=awmPrepareStyle(candidates[i]);
+                const matches=awmStyleMatches(next.styles,incoming.name);
+                const same=next.styles.find(s=>String(s.content||'')===incoming.content);
+                if(same){identical++;log('identical-skipped',{index:i+1,total:candidates.length,matchedId:same.id});continue;}
+                if(!matches.length){next.styles.push({...incoming,id:uid('style')});added++;log('added',{index:i+1,reason:'unmatched'});continue;}
+                log('review',{index:i+1,total:candidates.length,matchCount:matches.length,matchedIds:matches.map(s=>s.id)});
+                const answer=await awmCompareStyle(incoming,matches,i,candidates.length);
+                if(answer.choice==='new'){
+                    const old=next.styles.find(s=>s.id===answer.id);
+                    if(old){old.content=incoming.content;updated++;log('body-replaced',{index:i+1,matchedId:old.id});}
+                    else throw Error('所选旧文风不存在');
+                }else if(answer.choice==='skip'){
+                    next.styles.push({...incoming,id:uid('style')});added++;log('added',{index:i+1,reason:'skip-keep-both',matchedId:answer.id});
+                }else{kept++;log('kept-old',{index:i+1,matchedId:answer.id});}
+                await new Promise(resolve=>hostWindow.requestAnimationFrame(resolve));
+            }
+            if(added||updated)save(next);
+            render('styles');log('completed',{added,updated,kept,identical});
+            toast('导入完成：新增 '+added+'，正文更新 '+updated+'，保留旧版 '+kept+'，正文相同 '+identical,'success');
+        }catch(error){log('failed',{message:error.message});throw error;}
+        finally{awmStyleImportBusy=false;}
     }
     function awmTagTone(tag){return /^@/.test(tag.trim())?'red':tag.trim().toUpperCase()==='NSFW'?'yellow':'';}
     function awmFixContrast() {
@@ -1318,10 +1412,15 @@
         #${PANEL_ID} .awm-tag[data-tone="yellow"]{background:#ffe184!important;color:#513800!important}
         #${PANEL_ID} .awm-tag[data-tone="red"]{background:#f7b5b5!important;color:#6e1111!important}
         #${PANEL_ID} [hidden]{display:none!important}
+        #${PANEL_ID} .awm-folder-name{font-size:1.08em;font-weight:700}
+        #${PANEL_ID} .awm-folder>summary .awm-meta{font-size:.78em;font-weight:400}
+        #${PANEL_ID} .awm-details>summary>b{font-size:.94em;font-weight:500}
+        #${PANEL_ID} .awm-details .awm-count{font-size:.75em;font-weight:400}
         #${PANEL_ID} .awm-compare-summary{font-size:12px;opacity:.84}
         #${PANEL_ID} .awm-diff-old{background:#f9d7d2;color:#5b1f1f;box-decoration-break:clone}
         #${PANEL_ID} .awm-diff-new{background:#d5efd8;color:#153f23;box-decoration-break:clone}
-        .awm-compare-box{container-type:inline-size;width:100%;min-height:0;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:10px;background:var(--awm-safe-bg);color:var(--awm-safe-ink)}
+        .awm-compare-box{container-type:inline-size;width:100%;min-width:0;min-height:0;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:10px;background:var(--awm-safe-bg);color:var(--awm-safe-ink)}
+        .awm-compare-box select{width:100%;max-width:100%;min-width:0}.awm-compare-cols b{overflow-wrap:anywhere}
         .awm-compare-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0;overflow:auto}.awm-compare-cols section{display:flex;flex-direction:column;min-height:0;min-width:0}.awm-compare-cols pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;min-height:0}.awm-compare-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
         @container(max-width:680px){.awm-compare-cols{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
         `;panel.appendChild(style);
@@ -1339,14 +1438,41 @@
             <div class="awm-layout-controls">
                 <button class="awm-btn" id="awmLayoutLock" type="button"></button>
                 <select class="awm-select" id="awmLayoutSlot" aria-label="面板位置槽"><option value="1">位置 1</option><option value="2">位置 2</option><option value="3">位置 3</option></select>
-                <button class="awm-btn" id="awmLayoutSave" type="button">保存到此槽</button>
+                </div><div class="awm-layout-actions"><button class="awm-btn" id="awmLayoutSave" type="button">保存到此槽</button>
                 <button class="awm-btn" id="awmLayoutReset" type="button">恢复默认位置</button>
             </div>
         </section>`;
+        main.insertAdjacentHTML('beforeend', `<section class="awm-extension-card" aria-labelledby="awmStorageTitle">
+          <h3 id="awmStorageTitle">数据存储</h3>
+          <label class="awm-extension-line awm-storage-line"><span>存储位置</span><select id="awmStorageMode"><option value="tavern">酒馆（默认）</option><option value="browser">浏览器</option></select></label>
+          <div class="awm-extension-actions"><button class="menu_button" id="awmImportData" type="button">导入数据</button><button class="menu_button" id="awmExportData" type="button">导出数据</button><button class="menu_button" id="awmClearTavernData" type="button">清除鱼板面数据</button></div>
+        </section><section class="awm-extension-card" id="awmBackupSection" aria-labelledby="awmBackupTitle">
+          <div class="awm-backup-heading"><h3 id="awmBackupTitle">备份清理</h3><span id="awmBackupSaveStatus" role="status" aria-live="polite"></span></div>
+          <div class="awm-backup-fields">
+            <label class="awm-backup-field"><span>保留时间</span><select id="awmBackupRetention"><option value="off">不开启</option><option value="1d">1天</option><option value="7d">7天</option><option value="30d">30天</option><option value="3m">3个月</option><option value="6m">6个月</option><option value="1y">1年</option></select></label>
+            <div><label class="awm-backup-field"><span>清理时间</span><select id="awmBackupSchedule"><option value="startup">每次加载酒馆</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
+              <div class="awm-backup-extra" id="awmBackupDaily" hidden><input id="awmBackupDailyTime" type="time" aria-label="每日清理时刻" value="04:00"></div>
+              <div class="awm-backup-extra" id="awmBackupWeekly" hidden><select id="awmBackupWeeklyDay" aria-label="每周清理日期"><option value="0">周日</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option></select><input id="awmBackupWeeklyTime" type="time" aria-label="每周清理时刻" value="04:00"></div>
+            </div>
+          </div>
+          
+          <div class="awm-extension-actions awm-backup-actions"><button class="menu_button" id="awmBackupManual" type="button">手动删除</button><button class="menu_button" id="awmBackupScan" type="button">检查备份</button><button class="menu_button" id="awmBackupClean" type="button">立即清理</button></div>
+          <p id="awmBackupPanelStatus" class="awm-backup-status" role="status"></p><div id="awmBackupConfirm" class="awm-backup-confirm" hidden>
+            <p id="awmBackupConfirmMessage"></p>
+            <div class="awm-extension-actions"><button class="menu_button" id="awmBackupConfirmCancel" data-backup-confirm type="button">取消</button><button class="menu_button" id="awmBackupConfirmAccept" data-backup-confirm type="button">确认清理</button></div>
+          </div>
+          
+        </section><section class="awm-extension-card" aria-labelledby="awmLogTitle">
+          <h3 id="awmLogTitle">诊断日志</h3>
+          <div class="awm-extension-actions"><button class="menu_button" id="awmExportMmLog" type="button">导出日志</button><button class="menu_button" id="awmClearMmLog" type="button">清空日志</button></div>
+        </section>`);
+        main.classList.add('awm-panel-settings');
         awmLayoutBindSettings(main);
+        bindDataSettings(main);
+        mmBackupBind(main);
     }
-    // BEGIN V9.0 isolated backup cleaner.
-    const MM_BACKUP_DEFAULT = { retention: 'off', schedule: 'startup', dailyTime: '04:00', weeklyDay: '0', weeklyTime: '04:00', lastRun: 0 };
+    // BEGIN V9.7 isolated backup cleaner.
+    const MM_BACKUP_DEFAULT = { enabled: true, retention: 'off', schedule: 'startup', dailyTime: '04:00', weeklyDay: '0', weeklyTime: '04:00', lastRun: 0, lastAutomaticRun: 0 };
     let mmBackupTimer = 0, mmBackupBusy = false, mmBackupStopped = false;
     let mmBackupConfirmResolve = null;
 
@@ -1354,7 +1480,11 @@
     const MM_BACKUP_PREF_KEY='鲜虾鱼板面.backupCleaner.v1';
     let mmBackupPrefs=null,mmBackupPrefsReading=null,mmBackupPrefsQueue=Promise.resolve(),mmBackupPrefsSequence=0;
     async function mmBackupServerSettings(){
-        const response=await mmSettingsFetch('/api/settings/get',{}),body=await response.json();
+        let timer;
+        const body=await Promise.race([
+            (async()=>{const response=await mmSettingsFetch('/api/settings/get',{});return response.json();})(),
+            new Promise((_,reject)=>{timer=hostWindow.setTimeout(()=>reject(Error('清理设置读取超时，请重新打开设置')),20000);})
+        ]).finally(()=>hostWindow.clearTimeout(timer));
         const settings=typeof body.settings==='string'?JSON.parse(body.settings):body.settings;
         if(!settings||typeof settings!=='object')throw Error('无法读取酒馆设置，清理未启动');
         return settings;
@@ -1403,7 +1533,7 @@
             while(true){
                 if(sequence!==mmBackupPrefsSequence)return;
                 const actual=mmBackupDecodePrefs(await mmBackupServerSettings());
-                if(actual&&Object.keys(MM_BACKUP_DEFAULT).every(key=>actual[key]===value[key]))break;
+                if(actual&&Object.keys(MM_BACKUP_DEFAULT).every(key=>({...MM_BACKUP_DEFAULT,...actual})[key]===value[key]))break;
                 if(Date.now()>=end)throw Error('酒馆尚未确认保存，请重试');
                 await new Promise(resolve=>hostWindow.setTimeout(resolve,pause));
                 pause=Math.min(4000,pause*2);
@@ -1414,11 +1544,31 @@
         if(sequence!==mmBackupPrefsSequence)await mmBackupPrefsQueue;
     }
 
-    // V9.0: retired copies stay in place until the shared retention expires.
+    // V9.7: retired copies stay in place until the shared retention expires.
     const MM_RETIRED_KEY = '鲜虾鱼板面.retiredCopies.v1';
     function mmRetiredLocal(key) {
         try { return !!JSON.parse(hostWindow.localStorage.getItem(MM_RETIRED_KEY)||'{}')[key]; }
         catch (_) { return false; }
+    }
+    async function mmContentDigest(raw){
+        const bytes=new TextEncoder().encode(raw);
+        if(hostWindow.crypto?.subtle?.digest){
+            try{return Array.from(new Uint8Array(await hostWindow.crypto.subtle.digest('SHA-256',bytes)),x=>x.toString(16).padStart(2,'0')).join('');}catch{}
+        }
+        const k=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+        const h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+        const data=new Uint8Array(Math.ceil((bytes.length+9)/64)*64);data.set(bytes);data[bytes.length]=128;
+        const view=new DataView(data.buffer),bits=bytes.length*8;
+        view.setUint32(data.length-8,Math.floor(bits/4294967296));view.setUint32(data.length-4,bits>>>0);
+        const w=new Uint32Array(64),r=(x,n)=>(x>>>n)|(x<<(32-n));
+        for(let offset=0;offset<data.length;offset+=64){
+            for(let i=0;i<16;i++)w[i]=view.getUint32(offset+i*4);
+            for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2];w[i]=(r(a,7)^r(a,18)^(a>>>3))+w[i-16]+(r(b,17)^r(b,19)^(b>>>10))+w[i-7];}
+            let [a,b,c,d,e,f,g,j]=h;
+            for(let i=0;i<64;i++){const t1=(j+(r(e,6)^r(e,11)^r(e,25))+((e&f)^(~e&g))+k[i]+w[i])>>>0,t2=((r(a,2)^r(a,13)^r(a,22))+((a&b)^(a&c)^(b&c)))>>>0;j=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+            [a,b,c,d,e,f,g,j].forEach((v,i)=>h[i]=(h[i]+v)>>>0);
+        }
+        return h.map(x=>x.toString(16).padStart(8,'0')).join('');
     }
     async function mmRetiredCleanup(retention) {
         const cutoff=mmBackupCutoff(retention);
@@ -1439,7 +1589,7 @@
             {store:local, keys:[ID,'ame-style-management-v03',MM_LOCAL_KEY,...domains.map(x=>'鲜虾鱼板面.v2.'+x),...domains.map(x=>'鲜虾鱼板面.unsaved.v84.'+x)]},
             {store:account, keys:domains.map(x=>'鲜虾鱼板面.v2.'+x).concat('ame-style-management-v05_backup_preferences_v1')}
         ];
-        const digest=async raw=>Array.from(new Uint8Array(await hostWindow.crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw)))).map(x=>x.toString(16).padStart(2,'0')).join('');
+        const digest=mmContentDigest;
         let removed=0;
         for(const plan of plans){
             const rawLedger=plan.store===account?server.accountStorage?.[MM_RETIRED_KEY]:local.getItem(MM_RETIRED_KEY);
@@ -1563,7 +1713,10 @@
         const list = await (await mmBackupFetch('/api/backups/chat/get')).json();
         if (!Array.isArray(list)) throw new Error('备份列表格式异常');
         const result = { files: [], bytes: 0, total: 0, skipped: 0, empty: 0 };
-        for (const item of list) {
+        let scanIndex=0,checked=0;
+        mmLog('backupCleaner','scan','listed','',undefined,{count:list.length});
+        const worker=async()=>{while(scanIndex<list.length&&!mmBackupStopped){
+            const item=list[scanIndex++];
             // Never pass settings backups, paths or arbitrary file names to deletion.
             const name = String(item?.file_name || '');
             if (!name || /[/\\]/.test(name) || name.includes('..')) continue;
@@ -1578,14 +1731,22 @@
             }
             if(reason){const size=mmBackupSize(item);result.files.push({name,size,reason});result.bytes+=size;}
             else if(!time)result.skipped++;
-        }
+            checked++;mmBackupStatus('检查备份：'+checked+' / '+list.length);
+        }};
+        await Promise.all(Array.from({length:Math.min(4,list.length)},worker));
         return result;
     }
+    let mmBackupPending=null;
+    function mmBackupIdleStatus(){
+        const prefs=mmBackupSettings();
+        if(mmBackupAutoEnabled())return prefs.lastAutomaticRun?'上次自动清理：'+new Date(prefs.lastAutomaticRun).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'尚未自动清理';
+        return mmBackupPending&&mmBackupPending.retention===prefs.retention?'待清理备份：'+mmBackupPending.count+' 个 · '+mmBackupFormat(mmBackupPending.bytes):'尚未检查';
+    }
     function mmBackupStatus(message) {
-        const node = root.getElementById('awmBackupStatus');
-        if (node) node.textContent = message;
+        root.querySelectorAll('#awmBackupStatus,#awmBackupPanelStatus').forEach(node=>node.textContent=message);
     }
     function mmBackupSetBusy(busy, action) {
+        const toggle=root.getElementById('awmBackupEnabled');if(toggle)toggle.disabled=busy;
         const area = root.getElementById('awmBackupSection');
         if (!area) return;
         area.setAttribute('aria-busy', String(busy));
@@ -1616,7 +1777,7 @@
         });
     }
     async function mmBackupRun(action = 'clean', automatic = false) {
-        if (mmBackupBusy || mmBackupStopped) return;
+        if (mmBackupBusy || mmBackupStopped || (automatic&&!mmBackupAutoEnabled())) return;
         const settings = mmBackupSettings();
         if (mmBackupCutoff(settings.retention) === null) { if (!automatic) mmBackupStatus('请先选择保留时间，当前未开启清理'); return; }
         mmBackupBusy = true;
@@ -1629,18 +1790,22 @@
                 catch(error){mmLog('retiredCopies','clean','failed',error.message);toast(error.message,'warning');}
             }
             const scan = await mmBackupScan(settings.retention);
-            if (mmBackupStopped) return;
+            mmBackupPending={retention:settings.retention,count:scan.files.length,bytes:scan.bytes};
+            mmLog('backupCleaner','scan','completed','',undefined,{automatic,total:scan.total,eligible:scan.files.length,bytes:scan.bytes,skipped:scan.skipped});
+            if (mmBackupStopped || (automatic&&!mmBackupAutoEnabled())) return;
             if (action === 'scan') {
-                mmBackupStatus('共 ' + scan.total + ' 个聊天备份，过期 ' + scan.files.length + ' 个，约 ' + mmBackupFormat(scan.bytes) + (scan.skipped ? '；跳过 ' + scan.skipped + ' 个时间不明的备份' : ''));
+                mmBackupStatus('待清理备份：'+scan.files.length+' 个 · '+mmBackupFormat(scan.bytes));
                 mmLog('backupCleaner', 'scan', 'completed', '', undefined, { total: scan.total, expired: scan.files.length, bytes: scan.bytes, skipped: scan.skipped });
                 return;
             }
-            if (!scan.files.length) { mmBackupStatus('没有需要清理的备份'); return; }
+            if (!scan.files.length) {
+                if(automatic){try{await mmBackupPersist({lastAutomaticRun:Date.now()});}catch(error){mmLog('backupPreferences','lastAutomaticRun','failed',error.message);}}
+                mmBackupStatus(mmBackupIdleStatus());mmLog('backupCleaner','clean','completed','',undefined,{automatic,deleted:0});return; }
             if (!automatic && !await mmBackupConfirm(scan)) { mmBackupStatus('已取消清理'); return; }
             if (mmBackupStopped) return;
             let index = 0, deleted = 0, expired = 0, empty = 0, freed = 0, failed = 0;
             const worker = async () => {
-                while (index < scan.files.length && !mmBackupStopped) {
+                while (index < scan.files.length && !mmBackupStopped && (!automatic||mmBackupAutoEnabled())) {
                     const item = scan.files[index++];
                     try { await mmBackupFetch('/api/backups/chat/delete', { name: item.name }); deleted++; if(item.reason==='empty')empty++;else expired++; freed += item.size; }
                     catch (_) { failed++; }
@@ -1654,9 +1819,11 @@
             const result = (automatic ? '自动清理掉 '+(counts||'备份 0 个') : '已清理 '+deleted+' 个备份') + '，释放 '+mmBackupFormat(freed)+' 空间' + (failed ? '；失败 '+failed+' 个，可重新扫描' : '');
             mmBackupStatus(result+(mmBackupNativeLimit?'；当前酒馆缺少设置备份删除接口，仅处理聊天备份':''));
             mmLog('backupCleaner', 'clean', failed ? 'partial' : 'completed', '', undefined, { automatic, retention:settings.retention, deleted, expired, empty, freed, failed });
-            try { await mmBackupPersist({ lastRun: Date.now() }); }
+            try { await mmBackupPersist({ lastRun: Date.now(),...(automatic?{lastAutomaticRun:Date.now()}:{}) }); }
             catch (error) { mmLog('backupPreferences','lastRun','failed',error.message); }
-            if (automatic) toast(result, failed ? 'warning' : 'success');
+            mmBackupPending={retention:settings.retention,count:failed,bytes:Math.max(0,scan.bytes-freed)};
+            mmBackupStatus(mmBackupIdleStatus());
+            toast(result, failed ? 'warning' : 'success');
         } catch (error) {
             mmBackupStatus('备份' + (action === 'scan' ? '扫描' : '清理') + '失败：' + error.message);
             mmLog('backupCleaner', action, 'failed', error.message);
@@ -1668,16 +1835,17 @@
             if (!mmBackupStopped) mmBackupSetBusy(false);
         }
     }
+    function mmBackupAutoEnabled(){const prefs=mmBackupSettings();return prefs.enabled!==false&&prefs.retention!=='off';}
     async function mmBackupSchedule(startup = false) {
         try {await mmBackupReadPreferences();}catch(error){mmLog('backupPreferences','settings','unavailable',error);return;}
         hostWindow.clearTimeout(mmBackupTimer);
         if (mmBackupStopped) return;
         const settings = mmBackupSettings();
-        if (mmBackupCutoff(settings.retention) === null) return;
+        if (settings.enabled===false || mmBackupCutoff(settings.retention) === null) return;
         if (settings.schedule === 'startup') {
             if (startup) {
                 const later=()=>{if(mmBackupStopped)return;mmBackupTimer=hostWindow.setTimeout(()=>{
-                    const run=()=>{if(!mmBackupStopped&&mmBackupSettings().schedule==='startup')mmBackupRun('clean',true);};
+                    const run=()=>{if(!mmBackupStopped&&mmBackupAutoEnabled()&&mmBackupSettings().schedule==='startup')mmBackupRun('clean',true);};
                     if(typeof hostWindow.requestIdleCallback==='function')hostWindow.requestIdleCallback(run,{timeout:5000});else run();
                 },10000);};
                 if(root.readyState==='complete')later();else hostWindow.addEventListener('load',later,{once:true});
@@ -1745,12 +1913,13 @@
         const narrow=awmNarrowPanelWidth(vp),available=band.bottom-band.top;
         const margin=rect?0:8;
         const width=Math.min(vp.w-margin*2,rect?.width||(mobile?vp.w-24:narrow?.width||saved?.size||680));
-        const height=Math.min(rect?vp.h:available,rect?.height||(mobile?Math.min(622,saved?.size||622):available));
-        const left=rect?.left??narrow?.left??(saved?vp.x+(+saved.x||0)*vp.w:vp.x+(vp.w-width)/2);
+        const height=Math.min(available,rect?.height||(mobile?Math.min(622,saved?.size||622):available));
+        const left=rect?.left??narrow?.left??(saved?vp.x+(+saved.x||0)*vp.w:(dialog.id==='awmPresetSearchDialog'&&!mobile?vp.x+vp.w-width-8:vp.x+(vp.w-width)/2));
         const top=rect?.top??(saved?vp.y+(+saved.y||0)*vp.h:(mobile?band.top+(available-height)/2:band.top));
         Object.assign(dialog.style,{width:Math.max(0,width)+'px',height:Math.max(0,height)+'px',
             left:Math.max(vp.x+margin,Math.min(vp.x+vp.w-width-margin,left))+'px',
-            top:Math.max(rect?vp.y:band.top,Math.min((rect?vp.y+vp.h:band.bottom)-height,top))+'px'});
+            top:Math.max(band.top,Math.min(band.bottom-height,top))+'px'});
+        awmLayoutConstrain(dialog);
     }
     function mmToolDialogBind(dialog) {
         dialog.classList.add('awm-tool-dialog');
@@ -1758,7 +1927,12 @@
         hostWindow.addEventListener('resize',fit);
         hostWindow.visualViewport?.addEventListener('resize',fit);
         hostWindow.visualViewport?.addEventListener('scroll',fit);
+        const observer=hostWindow.ResizeObserver?new hostWindow.ResizeObserver(fit):null;
+        for(const selector of ['#top-bar','#top_bar','#send_form','#chat-input-container']) {
+            const element=root.querySelector(selector); if(element) observer?.observe(element);
+        }
         dialog.addEventListener('close',()=>{
+            observer?.disconnect();
             hostWindow.removeEventListener('resize',fit);
             hostWindow.visualViewport?.removeEventListener('resize',fit);
             hostWindow.visualViewport?.removeEventListener('scroll',fit);
@@ -1787,9 +1961,19 @@
             if(!ref||seen.has(ref.identifier))continue;
             seen.add(ref.identifier);
             const prompt=byId.get(ref.identifier);
-            if(prompt&&(scope==='all'||ref.enabled))entries.push(prompt);
+            if(prompt&&(scope==='all'||ref.enabled))entries.push(mmPresetReadCurrentFields(prompt));
         }
         return entries;
+    }
+    function mmPresetReadCurrentFields(prompt) {
+        const visible=field=>field&&field.getClientRects().length>0;
+        const quick=root.getElementById(prompt.identifier+'_prompt_quick_edit_textarea');
+        const save=root.getElementById('completion_prompt_manager_popup_entry_form_save');
+        const name=root.getElementById('completion_prompt_manager_popup_entry_form_name');
+        const body=root.getElementById('completion_prompt_manager_popup_entry_form_prompt');
+        if(save?.dataset.pmPrompt===String(prompt.identifier)&&visible(body))return {...prompt,name:visible(name)?name.value:prompt.name,content:body.value};
+        // A view of the live native field; never assign this draft back to the preset or keep a copy.
+        return visible(quick)?{...prompt,content:quick.value}:prompt;
     }
     function mmPresetMatches(text,keyword) {
         if(!keyword)return [];
@@ -1798,6 +1982,18 @@
     }
     function mmPresetHits(prompt,keyword) {
         return ['name','content'].flatMap(source=>mmPresetMatches(prompt[source],keyword).map(hit=>({...hit,source})));
+    }
+    // One preview per matching sentence; original hit indexes/counts still drive full-text navigation.
+    function mmPresetHitGroups(prompt,hits) {
+        const groups=[];let source=null,text='',cursor=0,start=0,lastStart=-1;
+        for(let index=0;index<hits.length;index++){
+            const hit=hits[index];
+            if(hit.source!==source){source=hit.source;text=String(prompt[source]??'');cursor=0;start=0;lastStart=-1;}
+            while(cursor<hit.start){if(/[。！？!?；;\n]/.test(text[cursor]))start=cursor+1;cursor++;}
+            if(start===lastStart)continue;
+            groups.push({hit,index});lastStart=start;
+        }
+        return groups;
     }
     function mmPresetHighlight(node,text,keyword,marks=null) {
         text=String(text??'');let cursor=0;
@@ -1817,8 +2013,7 @@
         return (start>0&&!separators.test(text[start-1])?'…':'')+text.slice(start,end)+(end<text.length&&!separators.test(text[end-1])?'…':'');
     }
     // Native quick-edit textareas save on blur. Block only the handoff blur, never rewrite their values.
-    function mmPresetFocusState() {
-        const field=root.activeElement;
+    function mmPresetFocusState(field=root.activeElement) {
         if(!field||!field.matches('textarea,input,select'))return null;
         if(!field.closest('#openai_settings,#completion_prompt_manager,#quick-edit-container,#completion_prompt_manager_popup')&&
             !field.matches('[data-pm-prompt],[id$="_prompt_quick_edit_textarea"],[id^="completion_prompt_manager_popup_entry_form_"]'))return null;
@@ -1830,15 +2025,17 @@
         try{return action();}finally{root.removeEventListener('blur',stop,true);root.removeEventListener('focusout',stop,true);}
     }
     async function mmPresetSearchOpen() {
+        if(!mmFeatures().search)return;
         const existing=root.getElementById('awmPresetSearchDialog');
         if(existing){existing.querySelector('[data-search]')?.focus();return;}
-        const focus=mmPresetFocusState(),dialog=root.createElement('dialog');
-        dialog.id='awmPresetSearchDialog';dialog.setAttribute('aria-labelledby','awmPresetSearchTitle');
+        let focus=mmPresetFocusState(),restoreOnClose=false;
+        const dialog=root.createElement('dialog');
+        dialog.id='awmPresetSearchDialog';dialog.setAttribute('aria-labelledby','awmPresetSearchTitle');dialog.setAttribute('aria-modal','false');
         dialog.innerHTML=`<div class="awm-tool-shell">
             <header class="awm-tool-head"><h3 id="awmPresetSearchTitle">预设全文搜索</h3><button type="button" data-close aria-label="关闭搜索">×</button></header>
             <div class="awm-preset-search-bar"><input type="search" data-search placeholder="搜索名称和正文" aria-label="搜索预设名称和正文" autocomplete="off"><select data-scope aria-label="搜索范围"><option value="enabled">已启用</option><option value="all">全部</option></select></div>
             <p class="awm-preset-summary" data-summary role="status" aria-live="polite">读取当前预设…</p>
-            <div class="awm-preset-results" data-results></div>
+            <div class="awm-preset-results" data-results tabindex="0"></div>
             <section class="awm-preset-view" data-view hidden><nav><button type="button" data-back>‹ 返回结果</button><div class="awm-preset-navigation"><button type="button" data-prev>上一个</button><span data-position aria-live="polite"></span><button type="button" data-next>下一个</button></div></nav><div class="awm-preset-full" data-full tabindex="0" aria-label="条目完整正文"></div></section>
         </div>`;
         (root.documentElement||root.body).appendChild(dialog);
@@ -1858,7 +2055,7 @@
             const scroller=q('full'),a=mark.getBoundingClientRect(),b=scroller.getBoundingClientRect();
             scroller.scrollTop+=a.top-b.top-Math.max(0,(scroller.clientHeight-a.height)/2);
         };
-        const showEntry=(identifier,index=0)=>{
+        const showEntry=(identifier,index=0,focusView=true)=>{
             try{
                 const prompt=entries().find(x=>x.identifier===identifier);
                 if(!prompt){viewId=null;q('view').hidden=true;q('results').hidden=false;search();return;}
@@ -1866,7 +2063,7 @@
                 const title=el('h4','awm-preset-full-title');if(prompt.name)mmPresetHighlight(title,prompt.name,keyword(),marks);else title.textContent='未命名条目';
                 const body=el('div','awm-preset-body');mmPresetHighlight(body,prompt.content,keyword(),marks);
                 q('full').append(title,body);if(!q('results').hidden)resultScroll=q('results').scrollTop;q('results').hidden=true;q('view').hidden=false;
-                jump(Math.min(index,Math.max(0,marks.length-1)));
+                jump(Math.min(index,Math.max(0,marks.length-1)));if(focusView)q('full').focus({preventScroll:true});
             }catch(error){fail(error);}
         };
         const search=()=>{
@@ -1883,7 +2080,7 @@
                     const row=el('article','awm-preset-result'),head=el('div','awm-preset-result-head');
                     const name=el('button','awm-preset-entry-name');name.type='button';mmPresetHighlight(name,prompt.name||'未命名条目',text);
                     name.onclick=()=>showEntry(prompt.identifier);head.append(name,el('span','awm-preset-hit-count',hits.length+' 处'));row.append(head);
-                    hits.forEach((hit,index)=>{
+                    mmPresetHitGroups(prompt,hits).forEach(({hit,index})=>{
                         const link=el('button','awm-preset-hit');link.type='button';link.setAttribute('aria-label',(hit.source==='name'?'名称':'正文')+'第 '+(index+1)+' 处命中，查看完整正文');
                         if(hit.source==='name')link.append(el('span','awm-preset-name-label','名称 · '));
                         mmPresetHighlight(link,mmPresetSnippet(prompt[hit.source],hit),text);
@@ -1897,26 +2094,45 @@
         };
         q('search').oninput=()=>{hostWindow.clearTimeout(timer);if(!keyword())search();else timer=hostWindow.setTimeout(search,100);};
         q('scope').onchange=search;
-        q('back').onclick=()=>{viewId=null;marks=[];q('view').hidden=true;q('results').hidden=false;q('results').scrollTop=resultScroll;};
+        q('back').onclick=()=>{viewId=null;marks=[];q('view').hidden=true;q('results').hidden=false;q('results').scrollTop=resultScroll;q('results').focus({preventScroll:true});};
         q('prev').onclick=()=>jump(position-1);q('next').onclick=()=>jump(position+1);
-        q('close').onclick=()=>dialog.close();
+        const closeSearch=()=>{restoreOnClose=dialog.contains(root.activeElement);dialog.close();};
+        q('close').onclick=closeSearch;
+        dialog.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeSearch();}});
         const context=hostWindow.SillyTavern?.getContext?.(),event=context?.eventTypes?.OAI_PRESET_CHANGED_AFTER||context?.event_types?.OAI_PRESET_CHANGED_AFTER;
-        const changed=()=>{if(!alive())return;if(viewId!==null)showEntry(viewId,position);else search();};
+        const changed=()=>{if(!alive())return;if(viewId!==null)showEntry(viewId,position,false);else search();};
         if(event)context.eventSource?.on?.(event,changed);
+        let editTimer=null;
+        const edited=event=>{
+            const target=event.target;
+            if(dialog.contains(target)||!target.closest?.('#openai_settings,#completion_prompt_manager,#quick-edit-container,#completion_prompt_manager_popup'))return;
+            hostWindow.clearTimeout(editTimer);editTimer=hostWindow.setTimeout(changed,100);
+        };
+        const handoff=event=>{
+            if(!dialog.contains(event.relatedTarget))return;
+            const state=mmPresetFocusState(event.target);
+            if(state){focus=state;event.stopImmediatePropagation();}
+        };
+        for(const type of ['input','change','click'])root.addEventListener(type,edited,true);
+        for(const type of ['blur','focusout'])root.addEventListener(type,handoff,true);
         dialog.addEventListener('close',()=>{
+            hostWindow.clearTimeout(editTimer);
+            for(const type of ['input','change','click'])root.removeEventListener(type,edited,true);
+            for(const type of ['blur','focusout'])root.removeEventListener(type,handoff,true);
             hostWindow.clearTimeout(timer);
             if(event){const off=context.eventSource?.removeListener||context.eventSource?.off;off?.call(context.eventSource,event,changed);}
             dialog.remove();marks=[];
-            if(focus?.field.isConnected)mmPresetWithoutBlur(focus,()=>{
+            if(restoreOnClose&&focus?.field.isConnected)mmPresetWithoutBlur(focus,()=>{
                 focus.field.focus({preventScroll:true});
                 if(typeof focus.start==='number'&&typeof focus.field.setSelectionRange==='function')focus.field.setSelectionRange(focus.start,focus.end,focus.direction||'none');
                 focus.field.scrollTop=focus.scrollTop;focus.field.scrollLeft=focus.scrollLeft;
             });
         },{once:true});
-        mmPresetWithoutBlur(focus,()=>{dialog.showModal();mmToolDialogBind(dialog);q('search').focus({preventScroll:true});});
+        mmPresetWithoutBlur(focus,()=>{dialog.show();mmToolDialogBind(dialog);q('search').focus({preventScroll:true});});
         native=await mmPresetNative();ready=true;search();
     }
     function mmPresetSearchAttach() {
+        if(!mmFeatures().search){root.getElementById('awmPresetSearchButton')?.remove();return;}
         const area=root.getElementById('openai_settings')||root;
         const label=area.querySelector('[data-i18n="View / Edit bias preset"]');
         const header=label?.closest('.inline-drawer-toggle')||area.querySelector('.openai_logit_bias_list')?.closest('.inline-drawer')?.querySelector('.inline-drawer-toggle')||root.querySelector('#completion_prompt_manager .completion_prompt_manager_header');
@@ -2117,11 +2333,12 @@
     async function mmBackupBind(main) {
         const section = main.querySelector('#awmBackupSection');
         if (!section) return;
-        const controls=[...section.querySelectorAll('input,select,button')];controls.forEach(x=>x.disabled=true);
+        section.querySelector('#awmBackupManual').onclick=mmBackupOpen;
+        const controls=[...section.querySelectorAll('input,select,button:not(#awmBackupManual)')];controls.forEach(x=>x.disabled=true);
         const loading=root.createElement('option');loading.value='';loading.textContent='读取中…';loading.selected=true;
         section.querySelector('#awmBackupRetention').prepend(loading);section.querySelector('#awmBackupRetention').value='';
         mmBackupStatus('读取清理设置…');
-        try{await mmBackupReadPreferences();}catch(error){loading.textContent='读取失败';mmBackupStatus('清理设置读取失败：'+error.message);return;}
+        try{await mmBackupReadPreferences();}catch(error){loading.textContent='读取失败，请重新打开';section.title=error.message;mmBackupStatus('清理设置读取失败：'+error.message);return;}
         if(!section.isConnected)return;loading.remove();controls.forEach(x=>x.disabled=false);
         const q = id => section.querySelector('#' + id), settings = mmBackupSettings();
         mmLog('backupPreferences', 'settings', 'restored', '', undefined, { retention: settings.retention, schedule: settings.schedule });
@@ -2141,25 +2358,53 @@
                 mmLog('backupPreferences', 'settings', 'changed', '', undefined, { field: id, value: q(id).value });
                 const sequence=++saveSequence;sync();mmBackupSaveStatus('…');
                 try {
-                    await mmBackupPersist({ retention: q('awmBackupRetention').value, schedule: q('awmBackupSchedule').value, dailyTime: q('awmBackupDailyTime').value || '04:00', weeklyDay: q('awmBackupWeeklyDay').value, weeklyTime: q('awmBackupWeeklyTime').value || '04:00' });
+                    await mmBackupPersist({ ...(id==='awmBackupRetention'?{enabled:q('awmBackupRetention').value!=='off'}:{}), retention: q('awmBackupRetention').value, schedule: q('awmBackupSchedule').value, dailyTime: q('awmBackupDailyTime').value || '04:00', weeklyDay: q('awmBackupWeeklyDay').value, weeklyTime: q('awmBackupWeeklyTime').value || '04:00' });
                     if(sequence!==saveSequence)return;
-                    mmBackupSchedule();mmBackupSaveStatus('设置已保存');
+                    mmBackupPending=null;mmBackupSchedule();mmBackupSyncToggle();mmBackupStatus(mmBackupIdleStatus());mmBackupSaveStatus('设置已保存');
                 } catch (error) { if(sequence===saveSequence){mmBackupSaveStatus('保存失败');mmBackupStatus('设置保存失败：'+error.message);}mmLog('backupPreferences','settings','failed',error); }
             };
             q(id).onchange = persist;
 
         });
         q('awmBackupManual').onclick = mmBackupOpen;
+        q('awmBackupScan').onclick = ()=>mmBackupRun('scan');
         q('awmBackupClean').onclick = ()=>mmBackupRun('clean');
-        sync(); mmBackupSetBusy(mmBackupBusy);
-        mmBackupStatus(settings.lastRun ? '上次清理：' + new Date(settings.lastRun).toLocaleString() : '尚未执行清理');
+        sync(); mmBackupSyncToggle();mmBackupSetBusy(mmBackupBusy);
+        if(!mmBackupBusy)mmBackupStatus(mmBackupIdleStatus());
     }
     hostWindow.addEventListener('pagehide', () => { mmBackupStopped = true; hostWindow.clearTimeout(mmBackupTimer); mmBackupConfirmResolve?.(false); });
-    // END V9.0 isolated backup cleaner.
+    // END V9.7 isolated backup cleaner.
 
+    const MM_FEATURE_KEY='鲜虾鱼板面.features.v1';
+    function mmFeatures() {
+        try {
+            const account=hostWindow.SillyTavern?.getContext?.()?.accountStorage;
+            return {editor:true,styles:true,search:true,...JSON.parse(account?.getItem?.(MM_FEATURE_KEY)||hostWindow.localStorage.getItem(MM_FEATURE_KEY)||'{}')};
+        } catch (_) { return {editor:true,styles:true,search:true}; }
+    }
+    function mmPageEnabled(page) {
+        const flags=mmFeatures();return page==='mianmian'?flags.editor:page==='styles'?flags.styles:true;
+    }
+    function mmFeatureApply() {
+        awmSyncNav();
+        const panel=root.getElementById(PANEL_ID);
+        if(panel&&panel.style.display!=='none'&&!mmPageEnabled(awmCurrentPage))render('settings');
+        if(!mmFeatures().search)root.getElementById('awmPresetSearchDialog')?.close();
+        mmPresetSearchAttach();
+    }
+    function mmFeatureSet(key,enabled) {
+        if(mmWriteLocked()||mmRuntime.loadWaiters.char||mmRuntime.loadWaiters.user)throw Error('请等待当前操作完成');
+        const value=JSON.stringify({...mmFeatures(),[key]:!!enabled});
+        const ctx=hostWindow.SillyTavern?.getContext?.();
+        if(ctx?.accountStorage?.setItem){ctx.accountStorage.setItem(MM_FEATURE_KEY,value);ctx.saveSettingsDebounced?.();}
+        else hostWindow.localStorage.setItem(MM_FEATURE_KEY,value);
+        mmFeatureApply();
+    }
     function bindExtensionSettings(main) {
-        mmBackupBind(main);
-        main.querySelector('#awmStorageMode').value=mmStorageMode();
+        for(const [id,key] of [['awmEditorEnabled','editor'],['awmStylesEnabled','styles'],['awmSearchEnabled','search']]) {
+            const input=main.querySelector('#'+id);input.checked=mmFeatures()[key];
+            input.onchange=()=>{try{mmFeatureSet(key,input.checked);}catch(error){input.checked=mmFeatures()[key];toast(error.message,'warning');}};
+        }
         const launcherToggle=main.querySelector('#awmLauncherVisible');
         launcherToggle.checked=mmLauncherVisible();
         launcherToggle.onchange=()=>mmSetLauncherVisible(launcherToggle.checked);
@@ -2167,6 +2412,33 @@
         launcherSize.value=hostWindow.localStorage.getItem(MM_LAUNCHER_KEY+'.size')||'56';
         main.querySelector('#awmLauncherSizeValue').textContent=launcherSize.value+'px';
         launcherSize.oninput=()=>{main.querySelector('#awmLauncherSizeValue').textContent=mmLauncherSize(launcherSize.value)+'px';};
+        main.querySelector('#awmResetLauncher').onclick=()=>{
+            hostWindow.localStorage.removeItem(MM_LAUNCHER_KEY+'.position');
+            const button=root.getElementById('awm-launcher-v54');
+            if(button){button.style.left=button.style.top='';button.style.right='18px';button.style.bottom='95px';}
+            mmSetLauncherVisible(true);launcherToggle.checked=true;
+        };
+        const toggle=main.querySelector('#awmBackupEnabled');toggle.disabled=true;
+        mmBackupReadPreferences().then(()=>{toggle.disabled=false;mmBackupSyncToggle();if(!mmBackupBusy)mmBackupStatus(mmBackupIdleStatus());}).catch(error=>mmBackupStatus('清理设置读取失败：'+error.message));
+        toggle.onchange=async()=>{
+            const previous=mmBackupSettings();toggle.disabled=true;
+            const enabled=toggle.checked;
+            hostWindow.clearTimeout(mmBackupTimer);
+            try {
+                await mmBackupPersist({enabled,retention:enabled&&previous.retention==='off'?'7d':previous.retention});
+                mmBackupSchedule();mmBackupStatus(mmBackupIdleStatus());
+                const select=root.getElementById('awmBackupRetention');if(select)select.value=mmBackupSettings().retention;
+            } catch(error){mmBackupStatus('设置保存失败：'+error.message);}
+            finally{toggle.disabled=false;mmBackupSyncToggle();}
+        };
+        mmFeatureApply();
+    }
+    function mmBackupSyncToggle() {
+        const toggle=root.getElementById('awmBackupEnabled'),prefs=mmBackupSettings();
+        if(toggle)toggle.checked=prefs.enabled!==false&&prefs.retention!=='off';
+    }
+    function bindDataSettings(main) {
+        main.querySelector('#awmStorageMode').value=mmStorageMode();
         main.querySelector('#awmExportMmLog').onclick = mmExportDiagnostics;
         main.querySelector('#awmClearMmLog').onclick = () => { mmDiagnostics.length = 0; toast('诊断日志已清空', 'success'); };
         main.querySelector('#awmImportData').onclick = importAllData;
@@ -2177,12 +2449,6 @@
             catch (err) { e.target.value = previous; toast('切换失败：' + err.message, 'error'); }
         };
 
-        main.querySelector('#awmResetLauncher').onclick=()=>{
-            hostWindow.localStorage.removeItem(MM_LAUNCHER_KEY+'.position');
-            const button=root.getElementById('awm-launcher-v54');
-            if(button){button.style.left=button.style.top='';button.style.right='18px';button.style.bottom='95px';}
-            mmSetLauncherVisible(true);launcherToggle.checked=true;
-        };
         main.querySelector('#awmClearTavernData').onclick=()=>{
             if(mmStorageMode() === 'tavern' && !canUseTavernStorage()) return toast('当前没有可用的酒馆持久化接口','warning');
             const ok=mmStorageMode() === 'browser' ? (hostWindow.localStorage.removeItem(MM_LOCAL_KEY), true) : clearTavernData();
@@ -2644,7 +2910,7 @@
     }
     function mmExportDiagnostics() {
         mmLog('ui', 'settings', 'export-log');
-        const blob = new Blob([JSON.stringify({ version: '9.0', events: mmDiagnostics }, null, 2)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify({ version: '9.7', events: mmDiagnostics }, null, 2)], { type: 'application/json' });
         const link = root.createElement('a'); link.href = URL.createObjectURL(blob);
         link.download = mmNextLogName(); link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 30000);
     }
@@ -4037,6 +4303,14 @@
 #awm-panel-v03 .awm-layout-controls>*{max-width:100%}
 `;
         style.textContent += '.awm-mm-pending-tags{display:flex;align-items:center;gap:4px;flex:none}.awm-mm-pending-tags:empty{display:none}.awm-mm-pending-tags .awm-btn{flex:none;white-space:nowrap}';
+        style.textContent += `
+        #awm-panel-v03 .awm-head{min-width:0;flex-wrap:nowrap}
+        #awm-panel-v03 .awm-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+        #awm-panel-v03 .awm-head-nav{flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:nowrap}
+        #awm-panel-v03 .awm-head-nav .awm-tabs{flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+        #awm-panel-v03 .awm-head-nav .awm-tab{flex:0 0 auto}
+        #awm-panel-v03 .awm-head-nav #awmClose{flex:0 0 auto}
+        `;
         root.head.appendChild(style);
     }
     function mmMountConfirm() {
@@ -4291,6 +4565,7 @@
         if(mmInitialized||!root.body)return;
         mmInitialized=true;
         addStyle();
+        mmAddStyle();
         makePanel();
         createMenuButton();
         mmCreateLauncher();
@@ -4298,7 +4573,7 @@
         mmPresetSearchWatch();
         mmInjectExtensionSettings();
         mmBackupSchedule(true);
-        console.log('[鲜虾鱼板面] V9.0 loaded');
+        console.log('[鲜虾鱼板面] V9.7 loaded');
     }
 
     if(root.readyState==='loading')root.addEventListener('DOMContentLoaded',init,{once:true});
