@@ -1,6 +1,7 @@
 'use strict';
 
 (function () {
+    const AWM_SCRIPT_URL = document.currentScript?.src || '';
     const ID = 'ame-style-management-v05';
     const PANEL_ID = 'awm-panel-v03';
     const STYLE_ID = 'awm-style-v05';
@@ -316,18 +317,52 @@
     function awmLayoutDevice() { return hostWindow.innerWidth <= 600 ? 'mobile' : 'desktop'; }
     function awmLayoutState() {
         try {
-            const all = JSON.parse(hostWindow.localStorage.getItem(AWM_LAYOUT_KEY) || '{}');
+            const all = JSON.parse(hostWindow.SillyTavern?.getContext?.()?.accountStorage?.getItem?.(AWM_LAYOUT_KEY) || hostWindow.localStorage.getItem(AWM_LAYOUT_KEY) || '{}');
             const state = all[awmLayoutDevice()] || {};
             return { locked: !!state.locked, slot: [1, 2, 3].includes(+state.slot) ? +state.slot : 1, slots: state.slots || {}, current: state.current || null };
         } catch (_) { return { locked: false, slot: 1, slots: {} }; }
     }
     function awmLayoutWrite(state) {
         try {
-            const all = JSON.parse(hostWindow.localStorage.getItem(AWM_LAYOUT_KEY) || '{}');
+            const all = JSON.parse(hostWindow.SillyTavern?.getContext?.()?.accountStorage?.getItem?.(AWM_LAYOUT_KEY) || hostWindow.localStorage.getItem(AWM_LAYOUT_KEY) || '{}');
             all[awmLayoutDevice()] = state;
             hostWindow.localStorage.setItem(AWM_LAYOUT_KEY, JSON.stringify(all));
+            const ctx=hostWindow.SillyTavern?.getContext?.();
+            if(ctx?.accountStorage?.setItem){ctx.accountStorage.setItem(AWM_LAYOUT_KEY,JSON.stringify(all));ctx.saveSettingsDebounced?.();}
         } catch (error) { toast('位置保存失败：' + error.message, 'error'); }
     }
+
+    function mmFeatureSlot(key) {
+        try { const value=JSON.parse(hostWindow.SillyTavern?.getContext?.()?.accountStorage?.getItem?.(AWM_LAYOUT_KEY+'.bindings')||'{}')[key];return [1,2,3].includes(+value)?+value:0; }catch{return 0;}
+    }
+    function mmFeaturePosition(key) {
+        const state=awmLayoutState(),slot=mmFeatureSlot(key);
+        return slot ? state.slots[slot]||null : null;
+    }
+    function mmFeatureLayoutBind(main) {
+        for(const [id,key] of [['awmEditorEnabled','mianmian'],['awmStylesEnabled','styles'],['awmSearchEnabled','search'],['awmBackupEnabled','backup']]){
+            const label=main.querySelector('#'+id)?.closest('label');if(!label)continue;
+            const row=root.createElement('div');row.className='awm-feature-position-row';label.before(row);row.append(label);
+            const select=root.createElement('select');select.setAttribute('aria-label',label.textContent.trim()+'位置');
+            select.innerHTML='<option value="0">默认</option><option value="1">位置 1</option><option value="2">位置 2</option><option value="3">位置 3</option>';
+            select.value=String(mmFeatureSlot(key));row.append(select);
+            select.onchange=()=>{
+                try{
+                    const ctx=hostWindow.SillyTavern?.getContext?.();
+                    if(!ctx?.accountStorage?.setItem)throw Error('酒馆账号设置尚未就绪，请稍后重试');
+                    const all=JSON.parse(ctx.accountStorage.getItem(AWM_LAYOUT_KEY+'.bindings')||'{}');
+                    all[key]=+select.value;
+                    ctx.accountStorage.setItem(AWM_LAYOUT_KEY+'.bindings',JSON.stringify(all));awmLayoutWrite(awmLayoutState());ctx.saveSettingsDebounced?.();
+                    if(+select.value&&!mmFeaturePosition(key))toast('此位置尚未保存，请在面板设置中保存到此槽','warning');
+                }catch(error){toast('位置绑定保存失败：'+error.message,'error');}
+            };
+        }
+    }
+    function mmApplyPagePosition(page) {
+        const value=mmFeaturePosition(page);
+        if(value)awmLayoutApply(value);else awmLayoutRestore();
+    }
+
     function awmLayoutViewport() {
         const vv = hostWindow.visualViewport;
         return { x: vv?.offsetLeft || 0, y: vv?.offsetTop || 0, w: vv?.width || hostWindow.innerWidth, h: vv?.height || hostWindow.innerHeight };
@@ -574,6 +609,7 @@
     // 同时用 window.visualViewport（存在的话）代替 innerWidth/innerHeight，
     // 顺便解决手机地址栏收起/展开导致可视视口和布局视口不一致的问题。
     function centerPanel() {
+        if(mmFeaturePosition(awmCurrentPage)){mmApplyPagePosition(awmCurrentPage);return;}
         if (awmLayoutState().locked || awmLayoutState().current) { awmLayoutRestore(); return; }
         const panel = root.getElementById(PANEL_ID);
         if (!panel || panel.style.display === 'none') return;
@@ -643,7 +679,7 @@
         mmLog('panel', 'panel', 'open');
         centerPanel();
         // 面板首次插入 DOM 时字体/图片等可能还没完成排版，下一帧再校正一次更保险。
-        (hostWindow.requestAnimationFrame || hostWindow.setTimeout)(() => { if (awmLayoutState().locked) awmLayoutRestore(); else if (awmLayoutState().current) awmLayoutRestore(); else centerPanel(); }, 16);
+        (hostWindow.requestAnimationFrame || hostWindow.setTimeout)(() => { if(mmFeaturePosition(awmCurrentPage))mmApplyPagePosition(awmCurrentPage);else if (awmLayoutState().locked || awmLayoutState().current) awmLayoutRestore(); else centerPanel(); }, 16);
         bindViewportListeners();
     }
 
@@ -695,7 +731,7 @@
         if (page === 'mianmian') renderMian(main);
         if (page === 'styles') renderStyles(main);
         if (page === 'settings') renderPanelSettings(main);
-        awmSyncNav(); awmFixContrast();
+        awmSyncNav(); awmFixContrast(); mmApplyPagePosition(page);
     }
 
     // ============================================================
@@ -971,7 +1007,7 @@
         const main=root.getElementById('awmMain'), oldData=load(), old=id?oldData.styles.find(x=>x.id===id):null;
         main.innerHTML=`<div class="awm-form awm-style-editor" style="height:100%;display:flex;flex-direction:column">
             <div class="awm-editor-top"><input class="awm-input awm-style-name" id="fName" placeholder="文风名称" value="${esc(old?.name||'')}">
-                <div class="awm-actions" style="margin:0"><button class="awm-btn" id="fShowReplace" type="button" aria-expanded="false">替换</button><label class="awm-btn" style="cursor:pointer">导入<input id="fFile" type="file" accept=".txt,.docx" style="display:none"></label><button class="awm-btn" id="fCancel" type="button">取消</button><button class="awm-btn" id="fSave" type="button">完成</button></div></div>
+                <div class="awm-actions" style="margin:0"><button class="awm-btn" id="fShowReplace" type="button" aria-expanded="false">替换</button><label class="awm-btn" style="cursor:pointer">导入<input id="fFile" type="file" accept=".txt,.docx,.pdf" style="display:none"></label><button class="awm-btn" id="fCancel" type="button">取消</button><button class="awm-btn" id="fSave" type="button">完成</button></div></div>
             <div class="awm-mm-style-replace" id="fReplacePanel" hidden><input class="awm-input" id="awmStyleFind" placeholder="查找正文词语"><input class="awm-input" id="awmStyleReplacement" placeholder="替换为"><button class="awm-btn" id="awmStyleReplaceAll" type="button">替换文风库全部正文</button></div>
             <input class="awm-input" id="fAuthor" placeholder="作者（可留空）" value="${esc(old?.author||'')}">
             ${makeTagEditor(old?.tags||[])}
@@ -1916,13 +1952,14 @@
         if (!dialog.open) return;
         const vp=awmLayoutViewport(),band=awmLayoutVerticalBand(),mobile=awmLayoutDevice()==='mobile';
         const main=root.getElementById(PANEL_ID),visible=main&&hostWindow.getComputedStyle(main).display!=='none';
-        const rect=visible?main.getBoundingClientRect():null;
-        const state=awmLayoutState(),saved=state.locked?state.slots[state.slot]:state.current;
+        const bound=mmFeaturePosition(dialog.id==='awmPresetSearchDialog'?'search':'backup');
+        const rect=!bound&&visible?main.getBoundingClientRect():null;
+        const state=awmLayoutState(),saved=bound||(state.locked?state.slots[state.slot]:state.current);
         const narrow=awmNarrowPanelWidth(vp),available=band.bottom-band.top;
         const margin=rect?0:8;
-        const width=Math.min(vp.w-margin*2,rect?.width||(mobile?vp.w-24:narrow?.width||saved?.size||680));
+        const width=Math.min(vp.w-margin*2,rect?.width||(mobile?vp.w-24:(bound?.size||narrow?.width||saved?.size||680)));
         const height=Math.min(available,rect?.height||(mobile?Math.min(622,saved?.size||622):available));
-        const left=rect?.left??narrow?.left??(saved?vp.x+(+saved.x||0)*vp.w:(dialog.id==='awmPresetSearchDialog'&&!mobile?vp.x+vp.w-width-8:vp.x+(vp.w-width)/2));
+        const left=rect?.left??(bound?vp.x+(+bound.x||0)*vp.w:null)??narrow?.left??(saved?vp.x+(+saved.x||0)*vp.w:(dialog.id==='awmPresetSearchDialog'&&!mobile?vp.x+vp.w-width-8:vp.x+(vp.w-width)/2));
         const top=rect?.top??(saved?vp.y+(+saved.y||0)*vp.h:(mobile?band.top+(available-height)/2:band.top));
         Object.assign(dialog.style,{width:Math.max(0,width)+'px',height:Math.max(0,height)+'px',
             left:Math.max(vp.x+margin,Math.min(vp.x+vp.w-width-margin,left))+'px',
@@ -2032,6 +2069,54 @@
         root.addEventListener('blur',stop,true);root.addEventListener('focusout',stop,true);
         try{return action();}finally{root.removeEventListener('blur',stop,true);root.removeEventListener('focusout',stop,true);}
     }
+
+    async function mmPresetSaveEntries(native, expectedName, drafts, status) {
+        const settings=native?.promptManager?.serviceSettings||native?.oai_settings;
+        if(!settings||typeof native?.getChatCompletionPreset!=='function')throw Error('当前酒馆缺少预设保存接口');
+        const check=()=>{if(settings.preset_settings_openai!==expectedName)throw Error('当前预设已切换，编辑内容已保留');};
+        const snapshot=()=>{
+            check();
+            const value=structuredClone(native.getChatCompletionPreset(settings));
+            value.prompts=value.prompts.map(prompt=>({...prompt,...mmPresetReadCurrentFields(prompt)}));
+            return value;
+        };
+        const save=async value=>{
+            const response=await mmSettingsFetch('/api/presets/save',{apiId:'openai',name:expectedName,preset:value});
+            const result=await response.json();
+            if(result.name!==expectedName)throw Error('预设保存返回的名称不一致');
+            const index=native.openai_setting_names?.[expectedName];
+            if(index!==undefined&&native.openai_settings)native.openai_settings[index]=structuredClone(value);
+        };
+        status('正在保存当前预设…');
+        await save(snapshot());
+        check();
+        const next=snapshot();
+        for(const [identifier,fields] of drafts){
+            const prompt=next.prompts.find(p=>p.identifier===identifier);
+            if(!prompt||prompt.marker)throw Error('修改的条目不存在或不是可编辑正文，草稿已保留');
+            for(const key of ['name','content'])if(Object.hasOwn(fields,key))prompt[key]=fields[key];
+        }
+        status('正在保存全部修改…');
+        await save(next);
+        check();
+        for(const stored of next.prompts){
+            const live=settings.prompts.find(p=>p.identifier===stored.identifier);
+            if(live)Object.assign(live,stored);
+            const quick=root.getElementById(stored.identifier+'_prompt_quick_edit_textarea');
+            if(quick)quick.value=stored.content||'';
+            const button=root.getElementById('completion_prompt_manager_popup_entry_form_save');
+            if(button?.dataset.pmPrompt===String(stored.identifier)){
+                const body=root.getElementById('completion_prompt_manager_popup_entry_form_prompt');
+                if(body)body.value=stored.content||'';
+                const name=root.getElementById('completion_prompt_manager_popup_entry_form_name');
+                if(name)name.value=stored.name||'';
+            }
+        }
+        hostWindow.SillyTavern?.getContext?.()?.saveSettingsDebounced?.();
+        native.promptManager?.render?.();
+        status('已保存');
+    }
+
     async function mmPresetSearchOpen() {
         if(!mmFeatures().search)return;
         const existing=root.getElementById('awmPresetSearchDialog');
@@ -2042,7 +2127,7 @@
         dialog.innerHTML=`<div class="awm-tool-shell">
             <header class="awm-tool-head"><h3 id="awmPresetSearchTitle">预设全文搜索</h3><button type="button" data-close aria-label="关闭搜索">×</button></header>
             <div class="awm-preset-search-bar"><input type="search" data-search placeholder="搜索名称和正文" aria-label="搜索预设名称和正文" autocomplete="off"><select data-scope aria-label="搜索范围"><option value="enabled">已启用</option><option value="all">全部</option></select></div>
-            <p class="awm-preset-summary" data-summary role="status" aria-live="polite">读取当前预设…</p>
+            <div class="awm-preset-summary-row"><p class="awm-preset-summary" data-summary role="status" aria-live="polite">读取当前预设…</p><button type="button" data-save disabled>保存</button></div><span class="awm-preset-save-status" data-save-status role="status"></span>
             <div class="awm-preset-results" data-results tabindex="0"></div>
             <section class="awm-preset-view" data-view hidden><nav><button type="button" data-back>‹ 返回结果</button><div class="awm-preset-navigation"><button type="button" data-prev>上一个</button><span data-position aria-live="polite"></span><button type="button" data-next>下一个</button></div></nav><div class="awm-preset-full" data-full tabindex="0" aria-label="条目完整正文"></div></section>
         </div>`;
@@ -2052,7 +2137,33 @@
         const q=key=>dialog.querySelector('[data-'+key+']');
         const el=(tag,className,text)=>{const node=root.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
         let native=null,ready=false,timer=null,viewId=null,marks=[],position=0,resultScroll=0;
-        const keyword=()=>q('search').value.trim(),entries=()=>mmPresetEntries(native,q('scope').value);
+        let saving=false,draftName='';
+        const drafts=new Map();
+        const currentName=()=>(native?.promptManager?.serviceSettings||native?.oai_settings)?.preset_settings_openai;
+        const keyword=()=>q('search').value.trim(),entries=()=>{
+            if(drafts.size&&currentName()!==draftName)throw Error('预设已切换，请切回「'+draftName+'」保存未完成的修改');
+            return mmPresetEntries(native,q('scope').value).map(p=>({...p,...drafts.get(p.identifier)}));
+        };
+        const editField=(node,prompt,key)=>{
+            if(prompt.marker)return;
+            node.tabIndex=0;node.setAttribute('aria-label',key==='name'?'点击编辑条目名称':'点击编辑条目正文');
+            const begin=()=>{
+                if(saving)return;
+                const fieldPreset=currentName();
+                const input=el(key==='name'?'input':'textarea','awm-preset-inline-editor');
+                input.value=prompt[key]||'';input.setAttribute('aria-label',key==='name'?'条目名称':'条目正文');
+                if(key==='content'){input.rows=Math.max(8,input.value.split('\n').length);}
+                input.oninput=()=>{
+                    if(!drafts.size)draftName=fieldPreset;
+                    drafts.set(prompt.identifier,{...drafts.get(prompt.identifier),[key]:input.value});
+                    prompt[key]=input.value;
+                    q('save-status').textContent='';q('save').textContent='保存';
+                };
+                node.replaceWith(input);input.focus();
+                marks=marks.filter(mark=>mark.isConnected);jump(0);
+            };
+            node.onclick=begin;node.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();begin();}};
+        };
         const alive=()=>dialog.isConnected&&dialog.open;
         const fail=error=>{viewId=null;marks=[];q('view').hidden=true;q('results').hidden=false;q('summary').textContent=error.message;q('results').replaceChildren();};
         const jump=index=>{
@@ -2064,30 +2175,31 @@
             scroller.scrollTop+=a.top-b.top-Math.max(0,(scroller.clientHeight-a.height)/2);
         };
         const showEntry=(identifier,index=0,focusView=true)=>{
+            if(saving)return;
             try{
                 const prompt=entries().find(x=>x.identifier===identifier);
                 if(!prompt){viewId=null;q('view').hidden=true;q('results').hidden=false;search();return;}
                 viewId=identifier;marks=[];position=0;q('full').replaceChildren();
                 const title=el('h4','awm-preset-full-title');if(prompt.name)mmPresetHighlight(title,prompt.name,keyword(),marks);else title.textContent='未命名条目';
                 const body=el('div','awm-preset-body');mmPresetHighlight(body,prompt.content,keyword(),marks);
-                q('full').append(title,body);if(!q('results').hidden)resultScroll=q('results').scrollTop;q('results').hidden=true;q('view').hidden=false;
+                q('full').append(title,body);editField(title,prompt,'name');editField(body,prompt,'content');if(!q('results').hidden)resultScroll=q('results').scrollTop;q('results').hidden=true;q('view').hidden=false;
                 jump(Math.min(index,Math.max(0,marks.length-1)));if(focusView)q('full').focus({preventScroll:true});
             }catch(error){fail(error);}
         };
         const search=()=>{
-            if(!alive()||!ready)return;
+            if(!alive()||!ready||saving)return;
             hostWindow.clearTimeout(timer);
             try{
                 const text=keyword(),prompts=entries();
                 viewId=null;marks=[];q('view').hidden=true;q('results').hidden=false;q('results').replaceChildren();
-                if(!text){q('summary').textContent='输入关键词，搜索当前预设的名称和正文。';return;}
                 const fragment=root.createDocumentFragment();let count=0,items=0;
                 for(const prompt of prompts){
-                    const hits=mmPresetHits(prompt,text);if(!hits.length)continue;
+                    const hits=text?mmPresetHits(prompt,text):[];if(text&&!hits.length)continue;
                     count+=hits.length;items++;
                     const row=el('article','awm-preset-result'),head=el('div','awm-preset-result-head');
                     const name=el('button','awm-preset-entry-name');name.type='button';mmPresetHighlight(name,prompt.name||'未命名条目',text);
-                    name.onclick=()=>showEntry(prompt.identifier);head.append(name,el('span','awm-preset-hit-count',hits.length+' 处'));row.append(head);
+                    name.onclick=()=>showEntry(prompt.identifier);head.append(name);if(text)head.append(el('span','awm-preset-hit-count',hits.length+' 处'));row.append(head);
+                    if(!text){const preview=el('button','awm-preset-hit',String(prompt.content||'').slice(0,160)||'（无正文）');preview.type='button';preview.onclick=()=>showEntry(prompt.identifier);row.append(preview);}
                     mmPresetHitGroups(prompt,hits).forEach(({hit,index})=>{
                         const link=el('button','awm-preset-hit');link.type='button';link.setAttribute('aria-label',(hit.source==='name'?'名称':'正文')+'第 '+(index+1)+' 处命中，查看完整正文');
                         if(hit.source==='name')link.append(el('span','awm-preset-name-label','名称 · '));
@@ -2095,20 +2207,34 @@
                         link.onclick=()=>showEntry(prompt.identifier,index);row.append(link);
                     });fragment.append(row);
                 }
-                q('summary').textContent=items+' 个条目 · '+count+' 处命中';
-                if(!items)fragment.append(el('p','awm-preset-empty','没有匹配的条目。'));
+                q('summary').textContent=text?items+' 个条目 · '+count+' 处命中':'当前预设 · '+items+' 个条目';
+                if(!items)fragment.append(el('p','awm-preset-empty',text?'没有匹配的条目。':'当前范围没有条目。'));
                 q('results').append(fragment);q('results').scrollTop=0;
             }catch(error){fail(error);}
         };
+
+        q('save').onclick=async()=>{
+            if(saving||!ready)return;
+            const id=viewId,name=drafts.size?draftName:currentName();
+            saving=true;
+            const controls=[...dialog.querySelectorAll('button,input,select,textarea')];
+            const disabled=controls.map(node=>node.disabled);controls.forEach(node=>node.disabled=true);
+            try{
+                await mmPresetSaveEntries(native,name,new Map(drafts),text=>{q('save').textContent=text==='已保存'?'保存':'保存中…';});
+                drafts.clear();draftName='';q('save-status').textContent='';saving=false;search();if(id!==null)showEntry(id);
+            }catch(error){q('save-status').textContent='保存未完成：'+error.message;mmLog('presetEdit','preset','failed',error.message);}
+            finally{saving=false;q('save').textContent='保存';controls.forEach((node,i)=>node.disabled=disabled[i]);}
+        };
+
         q('search').oninput=()=>{hostWindow.clearTimeout(timer);if(!keyword())search();else timer=hostWindow.setTimeout(search,100);};
         q('scope').onchange=search;
         q('back').onclick=()=>{viewId=null;marks=[];q('view').hidden=true;q('results').hidden=false;q('results').scrollTop=resultScroll;q('results').focus({preventScroll:true});};
         q('prev').onclick=()=>jump(position-1);q('next').onclick=()=>jump(position+1);
-        const closeSearch=()=>{restoreOnClose=dialog.contains(root.activeElement);dialog.close();};
+        const closeSearch=()=>{if(saving)return;if(drafts.size&&!hostWindow.confirm('关闭并放弃所有条目的未保存修改？'))return;restoreOnClose=dialog.contains(root.activeElement);dialog.close();};
         q('close').onclick=closeSearch;
         dialog.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeSearch();}});
         const context=hostWindow.SillyTavern?.getContext?.(),event=context?.eventTypes?.OAI_PRESET_CHANGED_AFTER||context?.event_types?.OAI_PRESET_CHANGED_AFTER;
-        const changed=()=>{if(!alive())return;if(viewId!==null)showEntry(viewId,position,false);else search();};
+        const changed=()=>{if(!alive()||saving||dialog.querySelector('.awm-preset-inline-editor'))return;if(viewId!==null)showEntry(viewId,position,false);else search();};
         if(event)context.eventSource?.on?.(event,changed);
         let editTimer=null;
         const edited=event=>{
@@ -2137,7 +2263,7 @@
             });
         },{once:true});
         mmPresetWithoutBlur(focus,()=>{dialog.show();mmToolDialogBind(dialog);q('search').focus({preventScroll:true});});
-        native=await mmPresetNative();ready=true;search();
+        native=await mmPresetNative();ready=true;q('save').disabled=false;search();
     }
     function mmPresetSearchAttach() {
         if(!mmFeatures().search){root.getElementById('awmPresetSearchButton')?.remove();return;}
@@ -2414,6 +2540,7 @@
         mmFeatureApply();
     }
     function bindExtensionSettings(main) {
+        mmFeatureLayoutBind(main);
         for(const [id,key] of [['awmEditorEnabled','editor'],['awmStylesEnabled','styles'],['awmSearchEnabled','search']]) {
             const input=main.querySelector('#'+id);input.checked=mmFeatures()[key];
             input.onchange=()=>{try{mmFeatureSet(key,input.checked);}catch(error){input.checked=mmFeatures()[key];toast(error.message,'warning');}};
@@ -2550,187 +2677,93 @@
     //   /lib/pdf.mjs       -> PDF
     // 不依赖 esm.sh / jsDelivr，也不要求 window.JSZip / window.pdfjsLib
     // ============================================================
-    let jsZipPromise = null;
-    let pdfJsPromise = null;
-
-    function getBaseUrl() {
-        try {
-            return new URL('.', hostWindow.location.href).href;
-        } catch (_) {
-            return '/';
-        }
-    }
-
-    function loadScriptOnce(src, test) {
-        return new Promise((resolve, reject) => {
-            try {
-                if (test()) {
-                    resolve();
-                    return;
-                }
-
-                const existing = [...root.scripts].find(s => s.src && s.src.includes(src));
-                if (existing) {
-                    existing.addEventListener('load', () => resolve(), { once: true });
-                    existing.addEventListener('error', () => reject(new Error('加载失败：' + src)), { once: true });
-                    // 已经加载过但没有触发 load 的情况，稍后再检查一次。
-                    hostWindow.setTimeout(() => {
-                        if (test()) resolve();
-                    }, 100);
-                    return;
-                }
-
-                const script = root.createElement('script');
-                script.src = src;
-                script.async = true;
-                script.onload = () => test()
-                    ? resolve()
-                    : reject(new Error('脚本已加载但没有找到需要的库：' + src));
-                script.onerror = () => reject(new Error('酒馆内置库加载失败：' + src));
-                (root.head || root.documentElement).appendChild(script);
-            } catch (err) {
-                reject(err);
-            }
-        });
-    }
-
-    async function ensureJSZip() {
-        if (hostWindow.JSZip?.loadAsync) return hostWindow.JSZip;
-        if (jsZipPromise) return jsZipPromise;
-
-        jsZipPromise = (async () => {
-            const candidates = [
-                getBaseUrl() + 'lib/jszip.min.js',
-                '/lib/jszip.min.js'
-            ];
-
-            let lastErr = null;
-            for (const src of candidates) {
-                try {
-                    await loadScriptOnce(src, () => !!hostWindow.JSZip?.loadAsync);
-                    if (hostWindow.JSZip?.loadAsync) return hostWindow.JSZip;
-                } catch (err) {
-                    lastErr = err;
-                }
-            }
-
-            throw new Error(
-                '无法加载酒馆自带的 JSZip（已尝试 /lib/jszip.min.js）。' +
-                (lastErr?.message ? ' ' + lastErr.message : '')
-            );
-        })();
-
-        try {
-            return await jsZipPromise;
-        } catch (err) {
-            jsZipPromise = null;
-            throw err;
-        }
-    }
-
-    async function ensurePdfJs() {
-        if (hostWindow.pdfjsLib?.getDocument) return hostWindow.pdfjsLib;
-        if (pdfJsPromise) return pdfJsPromise;
-
-        pdfJsPromise = (async () => {
-            const candidates = [
-                getBaseUrl() + 'lib/pdf.mjs',
-                '/lib/pdf.mjs'
-            ];
-
-            let lastErr = null;
-            for (const src of candidates) {
-                try {
-                    // SillyTavern 自己的 PDF.js 是 ES module，所以这里用动态 import。
-                    const mod = await import(src);
-                    const pdfjs = mod?.pdfjsLib || mod?.default || mod;
-                    if (pdfjs?.getDocument) {
-                        hostWindow.pdfjsLib = pdfjs;
-                        return pdfjs;
-                    }
-                } catch (err) {
-                    lastErr = err;
-                }
-            }
-
-            // 某些酒馆版本已经通过 utils.js 初始化成全局变量。
-            if (hostWindow.pdfjsLib?.getDocument) return hostWindow.pdfjsLib;
-
-            throw new Error(
-                '无法加载酒馆自带的 PDF.js（已尝试 /lib/pdf.mjs）。' +
-                (lastErr?.message ? ' ' + lastErr.message : '')
-            );
-        })();
-
-        try {
-            return await pdfJsPromise;
-        } catch (err) {
-            pdfJsPromise = null;
-            throw err;
-        }
-    }
-
-    async function readDocx(file) {
-        const JSZip = await ensureJSZip();
-        const zip = await JSZip.loadAsync(await file.arrayBuffer());
-        const xmlFile = zip.file('word/document.xml');
-        if (!xmlFile) throw new Error('DOCX 中没有找到正文');
-
-        const xml = await xmlFile.async('text');
-        const parsed = new DOMParser().parseFromString(xml, 'application/xml');
-        if (parsed.querySelector('parsererror')) {
-            throw new Error('DOCX 正文解析失败');
-        }
-
-        return [...parsed.getElementsByTagName('w:p')].map(p => {
-            const parts = [];
-
-            [...p.childNodes].forEach(node => {
-                if (node.nodeType !== 1) return;
-
-                if (node.localName === 'r') {
-                    [...node.childNodes].forEach(n => {
-                        if (n.localName === 't') parts.push(n.textContent || '');
-                        else if (n.localName === 'tab') parts.push('\t');
-                        else if (n.localName === 'br' || n.localName === 'cr') parts.push('\n');
-                    });
-                } else if (node.localName === 'hyperlink') {
-                    [...node.getElementsByTagName('w:t')]
-                        .forEach(t => parts.push(t.textContent || ''));
-                }
+    let mammothPromise=null;
+    function getBaseUrl(){return new URL('.',hostWindow.location.href).href;}
+    async function ensureMammoth(){
+        if(hostWindow.mammoth?.extractRawText)return hostWindow.mammoth;
+        if(mammothPromise)return mammothPromise;
+        mammothPromise=(async()=>{
+            const script=AWM_SCRIPT_URL||[...root.scripts].map(s=>s.src).find(src=>/\/(?:鲜虾鱼板面|mianmian|mianmianmianmianmian)\/index\.js(?:\?|$)/.test(decodeURI(src)));
+            if(!script)throw Error('无法确定鱼板面安装目录，请刷新酒馆后重试');
+            const url=new URL('vendor/mammoth.browser.js',script).href;
+            await new Promise((resolve,reject)=>{
+                const node=root.createElement('script');let timer;
+                const finish=error=>{hostWindow.clearTimeout(timer);node.onload=node.onerror=null;if(error){node.remove();reject(error);}else resolve();};
+                node.src=url;node.onload=()=>finish(hostWindow.mammoth?.extractRawText?null:Error('DOCX 解析器未正确初始化'));
+                node.onerror=()=>finish(Error('无法加载 DOCX 解析器，请确认更新时包含 vendor 文件夹'));
+                timer=hostWindow.setTimeout(()=>finish(Error('DOCX 解析器加载超时，请重试')),15000);
+                (root.head||root.documentElement).appendChild(node);
             });
-
-            return parts.join('');
-        }).join('\n');
+            return hostWindow.mammoth;
+        })();
+        try{return await mammothPromise;}catch(error){mammothPromise=null;throw error;}
     }
-
-    async function readPdf(file) {
-        const pdfjs = await ensurePdfJs();
-        const data = new Uint8Array(await file.arrayBuffer());
-
-        const loadingTask = pdfjs.getDocument({ data });
-        const pdf = await loadingTask.promise;
-        const pages = [];
-
-        try {
-            for (let i = 1; i <= pdf.numPages; i++) {
-                const page = await pdf.getPage(i);
-                const textContent = await page.getTextContent();
-
-                pages.push(
-                    textContent.items
-                        .map(item => item.str || '')
-                        .join(' ')
-                );
-
-                page.cleanup?.();
+    async function readDocx(file){
+        const mammoth=await ensureMammoth();
+        const result=await mammoth.extractRawText({arrayBuffer:await file.arrayBuffer()});
+        if(!result.value.trim())throw Error('DOCX 未提取到文字，请确认文档正文不是图片');
+        return result.value;
+    }
+    function awmPdfPageText(items){
+        const lines=[];let line=null;
+        for(const item of items){
+            if(typeof item.str!=='string'||!item.transform)continue;
+            const x=item.transform[4],y=item.transform[5],height=Math.max(1,Math.abs(item.height)||Math.hypot(item.transform[2],item.transform[3])||12);
+            if(!line||Math.abs(line.y-y)>Math.max(2,height*.3)){
+                line={y,height,x,parts:[]};lines.push(line);
             }
-        } finally {
-            pdf.cleanup?.();
-            loadingTask.destroy?.();
+            line.parts.push({...item,x,height});line.height=Math.max(line.height,height);
+            if(item.hasEOL)line=null;
         }
-
-        return pages.join('\n\n');
+        if(!lines.length)return '';
+        const margin=Math.min(...lines.filter(l=>l.parts.some(p=>p.str.trim())).map(l=>l.x));
+        const output=[];let previous=null;
+        for(const row of lines){
+            let text='',end=null,last='';
+            for(const part of row.parts){
+                if(/^\s+$/.test(part.str)&&part.width<part.height*.12)continue;
+                const value=part.str.replace(/[\u2f00-\u2fdf]/g,c=>c.normalize('NFKC')).replace(/[⻛⻓⻆]/g,c=>({'⻛':'风','⻓':'长','⻆':'角'})[c]);
+                const gap=end===null?0:part.x-end;
+                // Preserve actual spaces; infer a missing word gap only from geometry.
+                if(text&&value&&!/\s$/.test(text)&&!/^\s/.test(value)){
+                    const cjk=/[\u2e80-\u9fff\uf900-\ufaff]/;
+                    const threshold=cjk.test(last.slice(-1))&&cjk.test(value[0])?part.height*.65:part.height*.18;
+                    if(gap>threshold)text+=' '.repeat(Math.min(8,Math.max(1,Math.round(gap/(part.height*.28)))));
+                }
+                text+=value;last=value||last;end=part.x+(part.width||0);
+            }
+            if(!text.trim())continue;
+            if(previous&&previous.y-row.y>Math.max(previous.height,row.height)*1.65)output.push('');
+            const indent=Math.min(32,Math.max(0,Math.round((row.x-margin)/(row.height*.5))));
+            output.push(' '.repeat(indent)+text.replace(/\s+$/,''));previous=row;
+        }
+        return output.join('\n');
+    }
+    async function readPdf(file){
+        const base=getBaseUrl();let pdfjs=hostWindow.pdfjsLib,lastError;
+        if(!pdfjs?.getDocument){
+            for(const filename of ['pdf.min.mjs','pdf.mjs']){
+                try{
+                    const mod=await import(new URL('lib/'+filename,base).href);
+                    pdfjs=mod.getDocument?mod:hostWindow.pdfjsLib;
+                    if(!pdfjs?.getDocument)throw Error('PDF 解析器没有可用接口');
+                    if(pdfjs.GlobalWorkerOptions)pdfjs.GlobalWorkerOptions.workerSrc=new URL('lib/'+filename.replace('pdf.','pdf.worker.'),base).href;
+                    break;
+                }catch(error){pdfjs=null;lastError=error;}
+            }
+        }
+        if(!pdfjs?.getDocument)throw Error('无法加载酒馆 PDF 解析器：'+(lastError?.message||''));
+        const task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())});let text;
+        try{
+            const pdf=await task.promise,pages=[];
+            for(let i=1;i<=pdf.numPages;i++){
+                const page=await pdf.getPage(i),content=await page.getTextContent();
+                pages.push(awmPdfPageText(content.items));page.cleanup?.();
+            }
+            text=pages.join('\n\n');
+        }finally{await task.destroy?.();}
+        if(!String(text||'').trim())throw Error('PDF 未提取到文字，可能是扫描件或图片型 PDF，需要文字识别');
+        return text;
     }
 
     async function readDocument(file) {
@@ -2923,7 +2956,7 @@
     }
     function mmExportDiagnostics() {
         mmLog('ui', 'settings', 'export-log');
-        const blob = new Blob([JSON.stringify({ version: '10.1', events: mmDiagnostics }, null, 2)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify({ version: '10.5', events: mmDiagnostics }, null, 2)], { type: 'application/json' });
         const link = root.createElement('a'); link.href = URL.createObjectURL(blob);
         link.download = mmNextLogName(); link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 30000);
     }
@@ -4586,7 +4619,7 @@
         mmPresetSearchWatch();
         mmInjectExtensionSettings();
         mmBackupSchedule(true);
-        console.log('[鲜虾鱼板面] V10.1 loaded');
+        console.log('[鲜虾鱼板面] V10.5 loaded');
     }
 
     if(root.readyState==='loading')root.addEventListener('DOMContentLoaded',init,{once:true});
